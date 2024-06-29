@@ -4,6 +4,27 @@ import { ApiResponse } from "../utils/apiResponse.js";
 import { User } from "../models/user.model.js";
 import { uploadOnCloudinary } from "../utils/cloudinary.js";
 
+// Generate AccessToken and refreshToken
+const generateAccessTokenAndRefreshToken = async (userId) => {
+  try {
+    const user = await User.findById(userId);
+    const accessToken = user.generateAccessToken();
+    const refreshToken = user.generateRefreshToken();
+
+    user.refreshToken = refreshToken;
+    await user.save({
+      validateBeforeSave: false,
+    });
+
+    return { accessToken, refreshToken };
+  } catch (error) {
+    throw new ApiError(
+      500,
+      "Something Went Wrong While Generating Refresh and AccessToken !"
+    );
+  }
+};
+
 // register user
 
 const registerUser = asyncHandler(async (req, res) => {
@@ -28,8 +49,16 @@ const registerUser = asyncHandler(async (req, res) => {
   // checking files
 
   const avatarLocalPath = req.files?.avatar[0]?.path;
+  // const coverImageLocalPath = req.files?.coverImage[0]?.path;
+  let coverImageLocalPath;
 
-  const coverImageLocalPath = req.files?.coverImage[0]?.path;
+  if (
+    req.files &&
+    Array.isArray(req.files.coverImage) &&
+    req.files.coverImage.length > 0
+  ) {
+    coverImageLocalPath = req.files.coverImage[0].path;
+  }
 
   if (!avatarLocalPath) {
     throw new ApiError(400, "Avatar is required");
@@ -64,4 +93,74 @@ const registerUser = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, createdUser, "User Registered Successfully !"));
 });
 
-export { registerUser };
+// login user
+
+const loginUser = asyncHandler(async (req, res) => {
+  const { email, username, password } = req.body;
+  if (!email && !username) {
+    throw new ApiError(400, "Username and Email is Required !!");
+  }
+  const user = await User.findOne({
+    $or: [{ username }, { email }],
+  });
+  if (!user) {
+    throw new ApiError(404, "User Not Found !!");
+  }
+  const isPasswordCorrect = await user.isPasswordCorrect(password);
+  if (!isPasswordCorrect) {
+    throw new ApiError(401, " Inavlid Password !!");
+  }
+  const { accessToken, refreshToken } =
+    await generateAccessTokenAndRefreshToken(user._id);
+
+  const lggedInUser = await User.findById(User._id).select(
+    "-password -refreshToken"
+  );
+
+  // sending cookies
+
+  const options = {
+    httpOnly: true,
+    secure: true,
+  };
+  return res
+    .status(200)
+    .cookie("accessToken", accessToken, options)
+    .cookie("refreshToken", refreshToken, options)
+    .json(
+      new ApiResponse(
+        200,
+        {
+          lggedInUser: user,
+          accessToken,
+          refreshToken,
+        },
+        "User Login Successfully !!"
+      )
+    );
+});
+
+// logout user
+
+const logOutUser = asyncHandler(async (req, res) => {
+  User.findByIdAndUpdate(
+    req.user._id,
+    {
+      $set: { refreshToken: undefined },
+    },
+    {
+      new: true,
+    }
+  );
+  const options = {
+    httpOnly: true,
+    secure: true,
+  };
+  return res
+    .status(200)
+    .clearCookie("accessToken", options)
+    .clearCookie("refreshToken", options)
+    .json(new ApiResponse(200, {}, "User Logged Out !"));
+});
+
+export { registerUser, loginUser, logOutUser };
